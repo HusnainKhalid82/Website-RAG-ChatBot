@@ -37,30 +37,86 @@ GEMINI_EMBEDDING_MODEL=models/gemini-embedding-001
 python3 app.py ingest --site-url https://example.com --max-pages 3
 ```
 
-### Run the FastAPI server
+### Run the FastAPI backend
 
 ```bash
 python3 app.py serve --host 127.0.0.1 --port 8000
 ```
 
-### Run the Streamlit app
+### Run the Streamlit UI
 
 ```bash
 streamlit run streamlit_app.py
 ```
 
-### Ask a question
+### Ask a question (single-shot)
 
 ```bash
 python3 app.py chat --site-url https://example.com --question "What is this website about?"
 ```
 
+### Ask questions interactively (keeps chat history for follow-ups)
+
+```bash
+python3 app.py chat --site-url https://example.com
+# You: What products are offered?
+# You: what about pricing?      <- follow-up resolved using chat history
+# You: exit
+```
+
+## Architecture — the LangGraph RAG flow
+
+The core of the project is a `StateGraph` with conditional routing and a retry
+loop (not a linear `retrieve -> generate` chain):
+
+```
+              START
+                |
+                v
+           [ retrieve ]  <-------------------+
+                |                             |
+                v                             |
+        [ grade_documents ]                  |
+                |                             |
+      relevant? |  (conditional edge)        |
+       +--------+--------+                    |
+       | yes             | no                 |
+       v                 v                    |
+  [ generate ]     retries left?              |
+       |            +---------+               |
+       v            | yes     | no            |
+      END           v         v               |
+             [ rewrite_query ] [ fallback ]   |
+                    |               |          |
+                    +---- back -----|----------+
+                                    v
+                                   END
+```
+
+- **retrieve** — top-k (k=3) similarity search over the Chroma vector store.
+- **grade_documents** — the LLM judges whether the retrieved chunks are actually
+  relevant (YES/NO + rationale). This is what prevents answering from noise.
+- **rewrite_query** — if not relevant, the LLM rewrites the question to be more
+  specific and self-contained (using chat history), then retrieval retries. Max 2 retries.
+- **generate** — answers grounded only in the retrieved chunks, citing sources as `[1]`, `[2]`.
+- **fallback** — if nothing relevant is found after retries, it says so honestly instead of hallucinating.
+
 ## Design notes
 
-- The ingestion pipeline uses `WebBaseLoader` and a simple in-domain URL collector.
-- Chunking uses `CharacterTextSplitter` with 1000 characters and 200 characters overlap.
-- The LangGraph flow grades retrieved docs, rewrites the query up to 2 retries, and falls back honestly when relevance is low.
-- Conversation context is preserved in memory for follow-up questions.
+- **Loading & cleaning:** each in-domain page is fetched and parsed with BeautifulSoup;
+  `nav`, `footer`, `header`, `aside`, `form`, `script`, and `style` tags are stripped so
+  boilerplate does not pollute the chunks. `WebBaseLoader` is kept as a per-URL fallback.
+- **Chunking:** `RecursiveCharacterTextSplitter` with **chunk_size=1000, overlap=200**.
+  1000 characters is roughly a paragraph or two — enough context for a grounded answer
+  without diluting the embedding; the 200-char overlap keeps a sentence from being split
+  away from its supporting context. Recursive splitting (unlike plain `CharacterTextSplitter`)
+  still produces well-sized chunks even when the cleaned text has no blank-line breaks.
+- **Retry logic:** the graph grades retrieved docs, rewrites the query up to 2 times, and
+  falls back honestly when relevance stays low.
+- **Conversation memory:** chat history is threaded through the graph state and stored per
+  `conversation_id`, so follow-up questions ("what about pricing?") are resolved in context.
+- **Interfaces:** an interactive/one-shot **CLI** (`app.py chat`), a **FastAPI** backend
+  (`app.py serve`), and a **Streamlit** UI (`streamlit run streamlit_app.py`).
 
 ## Assignment deliverables
 
