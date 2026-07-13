@@ -10,5 +10,5 @@ openai==2.45.0
 uvicorn==0.39.0
 streamlit==1.26.0
 google-generativeai==0.8.6
-# Optional Gemini dependency for Google Gemini / Gemini-compatible APIs
-# If using a newer Gemini integration path, adjust accordingly.
+# Pin protobuf <5 so the Gemini SDK and Streamlit 1.26 stay compatible.
+protobuf<5

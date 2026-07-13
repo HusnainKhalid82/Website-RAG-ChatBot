@@ -44,7 +44,7 @@ def build_rag_graph(retriever: Any, llm: ChatOpenAI, max_retries: int = MAX_RETR
 
     def retrieve(state: Dict[str, Any]) -> Dict[str, Any]:
         query = state.get("question", "")
-        docs = retriever.get_relevant_documents(query)
+        docs = retriever.invoke(query)
         state["retrieved_docs"] = docs
         state["retrieved_count"] = len(docs)
         logger.debug("Retrieved %s docs for query=%s", len(docs), query)
@@ -180,25 +180,37 @@ def build_rag_graph(retriever: Any, llm: ChatOpenAI, max_retries: int = MAX_RETR
 
 
 class GeminiChat:
+    """Minimal adapter exposing a ChatOpenAI-like `predict_messages` over the
+    Gemini SDK, so the graph nodes can stay provider-agnostic."""
+
     def __init__(self, model_name: str, api_key: str, temperature: float = 0.2):
         import google.generativeai as genai
 
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(model_name)
+        self._genai = genai
+        self.model_name = model_name
         self.temperature = temperature
 
     def predict_messages(self, messages: List[Union[SystemMessage, HumanMessage, AIMessage]]) -> Any:
+        # Gemini expects system text via `system_instruction`, and only
+        # user/model turns in the contents payload — not a "system" role.
+        system_parts: List[str] = []
         payload = []
         for message in messages:
             if isinstance(message, SystemMessage):
-                role = "system"
-            elif isinstance(message, AIMessage):
-                role = "model"
-            else:
-                role = "user"
+                system_parts.append(message.content)
+                continue
+            role = "model" if isinstance(message, AIMessage) else "user"
             payload.append({"role": role, "parts": [message.content]})
 
-        response = self.model.generate_content(payload)
+        model = self._genai.GenerativeModel(
+            self.model_name,
+            system_instruction="\n\n".join(system_parts) or None,
+        )
+        response = model.generate_content(
+            payload,
+            generation_config={"temperature": self.temperature},
+        )
         text = getattr(response, "text", None)
         if not text and getattr(response, "candidates", None):
             candidate = response.candidates[0]

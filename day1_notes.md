@@ -30,21 +30,21 @@ Retrievers query the vector store and return relevant documents. They usually su
 ## Tiny LangChain demo script
 
 ```python
-from langchain.document_loaders import WebBaseLoader
-from langchain.text_splitter import CharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
+from langchain_community.document_loaders import WebBaseLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from ingest import get_embedding_client  # provider-aware (Gemini or OpenAI)
 
 # 1) Load a single web page
 loader = WebBaseLoader("https://example.com")
 docs = loader.load()
 
 # 2) Split into chunks
-splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=100)
+splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
 chunks = splitter.split_documents(docs)
 
-# 3) Embed the chunks
-embeddings = OpenAIEmbeddings(openai_api_key="YOUR_OPENAI_KEY")
+# 3) Embed the chunks and store them in Chroma
+embeddings = get_embedding_client()
 vector_store = Chroma.from_documents(chunks, embeddings, persist_directory="./demo_chroma")
 
 # 4) Run a similarity search
@@ -75,48 +75,47 @@ Conditional edges let the graph choose the next node based on state values. This
 ## Toy LangGraph example
 
 ```python
-from langgraph.graph import StateGraph
+from langgraph.graph import END, START, StateGraph
 
 # Create a simple graph
 graph = StateGraph(dict)
 
 # 1. classify the input
-
 def classify(state):
     text = state.get("text", "").strip().lower()
-    if any(greet in text for greet in ["hi", "hello", "hey"]):
-        state["is_greeting"] = True
-    else:
-        state["is_greeting"] = False
+    state["is_greeting"] = any(greet in text for greet in ["hi", "hello", "hey"])
     return state
 
 # 2. respond to greeting
-
 def respond_greeting(state):
     state["response"] = "Hello! How can I help you today?"
     return state
 
 # 3. respond to question
-
 def respond_question(state):
     state["response"] = "That sounds like a question. I would answer it here."
     return state
 
-# Add nodes and edges
+# Add nodes
 graph.add_node("classify", classify)
 graph.add_node("greeting", respond_greeting)
 graph.add_node("question", respond_question)
-graph.add_edge("classify", "greeting")
-graph.add_edge("classify", "question")
 
+# Wiring: START -> classify -> (greeting | question) -> END.
+# The conditional edge (not plain edges) is what makes classify branch.
 def choose_next(state):
     return "greeting" if state.get("is_greeting") else "question"
 
-graph.add_conditional_edges("classify", choose_next)
+graph.add_edge(START, "classify")
+graph.add_conditional_edges("classify", choose_next, {"greeting": "greeting", "question": "question"})
+graph.add_edge("greeting", END)
+graph.add_edge("question", END)
 
-# Run the graph
-result = graph.invoke({"text": "Hello there"})
+# A StateGraph must be compiled before it can be invoked.
+app = graph.compile()
+result = app.invoke({"text": "Hello there"})
 print(result["response"])
 ```
 
-This graph demonstrates branching behavior based on the input state.
+This graph demonstrates branching behavior based on the input state. The full runnable
+version is in `langgraph_toy_graph.py`.

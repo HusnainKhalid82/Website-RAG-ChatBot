@@ -7,7 +7,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 from langchain.schema import Document
-from langchain.text_splitter import CharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings.base import Embeddings
 from langchain_community.document_loaders.web_base import WebBaseLoader
 from langchain_community.embeddings import OpenAIEmbeddings
@@ -54,32 +54,70 @@ def collect_site_urls(site_url: str, max_pages: int = 3) -> List[str]:
     return urls
 
 
+# Structural tags that almost never contain answer-bearing content. We strip
+# them before extracting text so nav bars, footers, cookie banners, and scripts
+# do not pollute the chunks (the "clean the text" step from the brief).
+BOILERPLATE_TAGS = [
+    "script", "style", "nav", "footer", "header",
+    "aside", "form", "noscript", "iframe", "svg",
+]
+
+
+def html_to_clean_text(html: str) -> str:
+    """Extract readable text from raw HTML, dropping boilerplate structure."""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(BOILERPLATE_TAGS):
+        tag.decompose()
+    # Prefer the main content region when the page marks one up.
+    main = soup.find("main") or soup.find("article") or soup.body or soup
+    return main.get_text(separator="\n")
+
+
 def clean_chunk_text(text: str) -> str:
-    tokens = text.strip().split()
-    return " ".join(tokens)
+    """Collapse runs of spaces, drop blank lines, but keep line breaks so the
+    recursive splitter still has natural boundaries to split on."""
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    return "\n".join(lines)
 
 
 def load_site_documents(site_url: str, max_pages: int = 3) -> List[Document]:
     urls = collect_site_urls(site_url, max_pages=max_pages)
-    loader = WebBaseLoader(web_paths=urls, show_progress=False)
-    docs = loader.load()
-    cleaned_docs = []
-    for doc in docs:
-        content = clean_chunk_text(doc.page_content)
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; RAGBot/1.0)"})
+
+    cleaned_docs: List[Document] = []
+    for url in urls:
+        try:
+            response = session.get(url, timeout=10)
+            response.raise_for_status()
+            content = clean_chunk_text(html_to_clean_text(response.text))
+        except Exception:
+            # Fall back to LangChain's WebBaseLoader if the direct fetch fails.
+            try:
+                loaded = WebBaseLoader(web_paths=[url], show_progress=False).load()
+                content = clean_chunk_text(loaded[0].page_content) if loaded else ""
+            except Exception:
+                content = ""
         if not content:
             continue
-        metadata = dict(doc.metadata)
-        metadata["source_url"] = metadata.get("source", "")
-        metadata["site_url"] = site_url
-        cleaned_docs.append(Document(page_content=content, metadata=metadata))
+        cleaned_docs.append(
+            Document(
+                page_content=content,
+                metadata={"source": url, "source_url": url, "site_url": site_url},
+            )
+        )
     return cleaned_docs
 
 
 def chunk_documents(documents: List[Document], chunk_size: int = 1000, chunk_overlap: int = 200) -> List[Document]:
-    splitter = CharacterTextSplitter(
-        separator="\n\n",
+    # RecursiveCharacterTextSplitter tries separators in order and falls back to
+    # finer ones, so it produces well-sized chunks even when the cleaned text has
+    # no blank-line paragraph breaks (CharacterTextSplitter could not).
+    splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+        separators=["\n\n", "\n", ". ", " ", ""],
     )
     chunks: List[Document] = []
     for doc in documents:
@@ -103,10 +141,14 @@ class GeminiEmbeddings(Embeddings):
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         from google.generativeai import embed_content
 
-        embeddings = []
-        for text in texts:
-            result = embed_content(model=self.model_name, content=text)
-            embeddings.append(result["embedding"])
+        # Batch the calls so ingesting a site is a handful of requests instead
+        # of one request per chunk (faster and less likely to hit rate limits).
+        embeddings: List[List[float]] = []
+        batch_size = 100
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start:start + batch_size]
+            result = embed_content(model=self.model_name, content=batch)
+            embeddings.extend(result["embedding"])
         return embeddings
 
     def embed_query(self, text: str) -> List[float]:
@@ -150,7 +192,13 @@ def create_or_update_vector_store(site_url: str, documents: List[Document], pers
         collection_name=collection_name,
         persist_directory=str(base_dir),
     )
-    vector_store.persist()
+    # Newer Chroma auto-persists when a persist_directory is set; older versions
+    # need an explicit persist(). Support both without crashing.
+    if hasattr(vector_store, "persist"):
+        try:
+            vector_store.persist()
+        except Exception:
+            pass
     return vector_store
 
 

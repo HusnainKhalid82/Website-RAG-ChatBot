@@ -9,8 +9,10 @@ def test_sanitize_collection_name():
 
 
 def test_clean_chunk_text():
-    text = "  Hello\n\nWorld  \n"
-    assert clean_chunk_text(text) == "Hello World"
+    # Intra-line whitespace collapses and blank lines are dropped, but real line
+    # breaks survive so the recursive splitter keeps natural boundaries.
+    text = "  Hello   there\n\nWorld  \n"
+    assert clean_chunk_text(text) == "Hello there\nWorld"
 
 
 def test_chunk_documents_empty():
