@@ -4,8 +4,6 @@ import os
 from pathlib import Path
 from typing import Optional
 from fastapi import FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, HttpUrl
 from dotenv import load_dotenv
 import uvicorn
@@ -23,10 +21,6 @@ app = FastAPI(
     description="Ingest a website, then ask questions grounded in the ingested site content.",
     version="0.1.0",
 )
-
-static_dir = Path(__file__).resolve().parent / "static"
-static_dir.mkdir(exist_ok=True)
-app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 bot = SiteRAGBot(persist_directory=os.getenv("VECTORDIR", "data/vectordb"))
 
@@ -73,13 +67,25 @@ def reset(request: ResetRequest) -> dict:
 
 
 @app.get("/")
-def root() -> RedirectResponse:
-    return RedirectResponse(url="/static/index.html")
+def root() -> dict:
+    return {"status": "ok", "message": "Use Streamlit UI by running `streamlit run streamlit_app.py`."}
 
 
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "message": "RAG chatbot is ready."}
+
+
+def print_answer(result: dict) -> None:
+    """Pretty-print a chat result for the CLI, including cited sources."""
+    print(f"\nBot: {result.get('answer', '')}")
+    sources = result.get("source_citations", [])
+    if sources:
+        unique_sources = list(dict.fromkeys(sources))
+        print("Sources:")
+        for source in unique_sources:
+            print(f"  - {source}")
+    print()
 
 
 def main() -> None:
@@ -102,11 +108,29 @@ def main() -> None:
         result = ingest_site(args.site_url, max_pages=args.max_pages, persist_directory=bot.persist_directory)
         print(result)
     elif args.command == "chat":
-        if not args.site_url or not args.question:
-            raise SystemExit("--site-url and --question are required for chat")
-        print("Asking:", args.question)
-        result = bot.answer_question(args.site_url, args.question, args.conversation_id)
-        print(result)
+        if not args.site_url:
+            raise SystemExit("--site-url is required for chat")
+        if args.question:
+            # Single-shot mode.
+            result = bot.answer_question(args.site_url, args.question, args.conversation_id)
+            print_answer(result)
+        else:
+            # Interactive mode: keep one conversation_id so chat history (and
+            # therefore follow-up questions) is maintained across turns.
+            conversation_id = args.conversation_id or "cli-session"
+            print(f"Chatting about {args.site_url}. Type 'exit' or 'quit' to stop.\n")
+            while True:
+                try:
+                    question = input("You: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    break
+                if not question:
+                    continue
+                if question.lower() in {"exit", "quit"}:
+                    break
+                result = bot.answer_question(args.site_url, question, conversation_id)
+                print_answer(result)
 
 
 if __name__ == "__main__":
