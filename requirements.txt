@@ -1,0 +1,14 @@
+beautifulsoup4==4.15.0
+chromadb==1.5.9
+fastapi==0.128.8
+langchain==0.3.30
+langchain-community==0.3.31
+langgraph==0.6.11
+python-dotenv==1.2.1
+requests==2.32.5
+openai==2.45.0
+uvicorn==0.39.0
+streamlit==1.26.0
+google-generativeai==0.8.6
+# Optional Gemini dependency for Google Gemini / Gemini-compatible APIs
+# If using a newer Gemini integration path, adjust accordingly.

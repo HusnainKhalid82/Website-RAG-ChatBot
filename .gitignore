@@ -1,0 +1,15 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.local
+*.sqlite
+*.db
+data/
+chromadb/
+.vscode/
+.venv/
+venv/
+__pycache__/
