@@ -58,11 +58,32 @@ python3 app.py chat --site-url https://example.com --question "What is this webs
 ## Design notes
 
 - The ingestion pipeline uses `WebBaseLoader` and a simple in-domain URL collector.
-- Chunking uses `CharacterTextSplitter` with 1000 tokens and 200 overlap.
+- Chunking uses `CharacterTextSplitter` with 1000 characters and 200 characters overlap.
 - The LangGraph flow grades retrieved docs, rewrites the query up to 2 retries, and falls back honestly when relevance is low.
 - Conversation context is preserved in memory for follow-up questions.
 
+## Assignment deliverables
+
+The repository includes the following submission artifacts:
+
+- `README.md` — setup and implementation overview
+- `day1_notes.md` — LangChain and LangGraph learning notes with proof-of-understanding
+- `langgraph_toy_graph.py` — a toy StateGraph example with conditional routing
+- `submission_writeup.md` — write-up covering chunking strategy, failure cases, and production improvements
+- `requirements.txt` — dependency list
+
+## Slack upload guidance
+
+For the Slack submission, upload:
+
+- `README.md`
+- `day1_notes.md`
+- `langgraph_toy_graph.py`
+- `submission_writeup.md`
+- `requirements.txt`
+
+Do not upload `.env`, `.env.example`, `data/`, or any local vector store files.
+
 ## Notes
 
-- The repository is not currently a git repo in this workspace. Commit history should be created in a proper GitHub repository for the assessment.
 - Do not commit `.env` or `data/`.
